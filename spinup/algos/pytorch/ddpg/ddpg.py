@@ -41,11 +41,7 @@ class ReplayBuffer:
 
 
 
-def ddpg(env_fn, actor_critic=None, replay_buffer=None, ac_kwargs=dict(), seed=0,
-         steps_per_epoch=4000, epochs=100, replay_size=int(1e6), gamma=0.99,
-         polyak=0.995, pi_lr=1e-3, q_lr=1e-3, batch_size=100, start_steps=10000,
-         update_after=1000, update_every=50, act_noise=0.1, num_test_episodes=10,
-         max_ep_len=1000, logger_kwargs=dict(), save_freq=1):
+def ddpg(env_fn, actor_critic=None, ac_kwargs=dict(), replay_buffer=None,replay_buffer_kwargs=dict(), seed=0, steps_per_epoch=4000, epochs=100, replay_size=int(1e6), gamma=0.99, polyak=0.995, pi_lr=1e-3, q_lr=1e-3, batch_size=100, start_steps=10000, update_after=1000, update_every=50, act_noise=0.1, num_test_episodes=10, max_ep_len=1000, logger_kwargs=None, save_freq=1):
     """
     Deep Deterministic Policy Gradient (DDPG)
 
@@ -130,8 +126,8 @@ def ddpg(env_fn, actor_critic=None, replay_buffer=None, ac_kwargs=dict(), seed=0
 
     """
 
+    # if not logger: assert RuntimeError('Please set logger...')
     logger = EpochLogger(**logger_kwargs)
-    # logger.save_config(locals())
 
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -149,7 +145,7 @@ def ddpg(env_fn, actor_critic=None, replay_buffer=None, ac_kwargs=dict(), seed=0
     if actor_critic is None:
         ac = core.MLPActorCritic(env.observation_space, env.action_space['action'], **ac_kwargs)
     else:
-        ac = actor_critic
+        ac = actor_critic(**ac_kwargs)
 
     ac_targ = deepcopy(ac)
 
@@ -159,7 +155,9 @@ def ddpg(env_fn, actor_critic=None, replay_buffer=None, ac_kwargs=dict(), seed=0
 
     # Experience buffer
     if not replay_buffer:
-        relay_buffer = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=replay_size)
+        replay_buffer = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=replay_size)
+    else:
+        replay_buffer = replay_buffer(**replay_buffer_kwargs)
 
     # Count variables (protip: try to get a feel for how different size networks behave!)
     var_counts = tuple(core.count_vars(module) for module in [ac.pi, ac.q])
