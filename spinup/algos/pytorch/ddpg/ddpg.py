@@ -231,7 +231,7 @@ def ddpg(env_fn, actor_critic=None, replay_buffer=None, ac_kwargs=dict(), seed=0
                 p_targ.data.add_((1 - polyak) * p.data)
 
     def get_action(o, noise_scale):
-        a = ac.act(torch.as_tensor(o, dtype=torch.float32))
+        a = ac.act(o)
         a += noise_scale * np.random.randn(act_dim)
         return np.clip(a, -act_limit, act_limit)
 

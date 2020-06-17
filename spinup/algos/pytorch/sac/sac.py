@@ -267,8 +267,7 @@ def sac(env_fn, actor_critic=core.MLPActorCritic, replay_buffer=None, ac_kwargs=
                 p_targ.data.add_((1 - polyak) * p.data)
 
     def get_action(o, deterministic=False):
-        return ac.act(torch.as_tensor(o, dtype=torch.float32),
-                      deterministic)
+        return ac.act(o, deterministic)
 
     def test_agent():
         for j in range(num_test_episodes):
