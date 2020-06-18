@@ -135,7 +135,7 @@ def ddpg(env_fn, mode='train', actor_critic=None, ac_kwargs=dict(), replay_buffe
     torch.manual_seed(seed)
     np.random.seed(seed)
 
-    env, test_env = env_fn(), env_fn()
+    env, test_env = env_fn('train'), env_fn('test')
 
     # ********************* CUSTOM ********************* #
     obs_dim = sum([env.observation_space.spaces[k].shape[0] for k in env.observation_space.spaces.keys()])
