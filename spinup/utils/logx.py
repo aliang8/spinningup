@@ -45,7 +45,7 @@ def restore_tf_graph(sess, fpath):
     """
     Loads graphs saved by Logger.
 
-    Will output a dictionary whose keys and values are from the 'inputs' 
+    Will output a dictionary whose keys and values are from the 'inputs'
     and 'outputs' dict you specified with logger.setup_tf_saver().
 
     Args:
@@ -54,7 +54,7 @@ def restore_tf_graph(sess, fpath):
 
     Returns:
         A dictionary mapping from keys to tensors in the computation graph
-        loaded from ``fpath``. 
+        loaded from ``fpath``.
     """
     tf.saved_model.loader.load(
                 sess,
@@ -72,7 +72,7 @@ class Logger:
     """
     A general-purpose logger.
 
-    Makes it easy to save diagnostics, hyperparameter configurations, the 
+    Makes it easy to save diagnostics, hyperparameter configurations, the
     state of a training run, and the trained model.
     """
 
@@ -81,13 +81,13 @@ class Logger:
         Initialize a Logger.
 
         Args:
-            output_dir (string): A directory for saving results to. If 
+            output_dir (string): A directory for saving results to. If
                 ``None``, defaults to a temp directory of the form
                 ``/tmp/experiments/somerandomnumber``.
 
-            output_fname (string): Name for the tab-separated-value file 
-                containing metrics logged throughout a training run. 
-                Defaults to ``progress.txt``. 
+            output_fname (string): Name for the tab-separated-value file
+                containing metrics logged throughout a training run.
+                Defaults to ``progress.txt``.
 
             exp_name (string): Experiment name. If you run multiple training
                 runs and give them all the same ``exp_name``, the plotter
@@ -140,7 +140,7 @@ class Logger:
         Call this once at the top of your experiment, passing in all important
         config vars as a dict. This will serialize the config to JSON, while
         handling anything which can't be serialized in a graceful way (writing
-        as informative a string as possible). 
+        as informative a string as possible).
 
         Example use:
 
@@ -166,11 +166,11 @@ class Logger:
         To be clear: this is about saving *state*, not logging diagnostics.
         All diagnostic logging is separate from this function. This function
         will save whatever is in ``state_dict``---usually just a copy of the
-        environment---and the most recent parameters for the model you 
-        previously set up saving for with ``setup_tf_saver``. 
+        environment---and the most recent parameters for the model you
+        previously set up saving for with ``setup_tf_saver``.
 
         Call with any frequency you prefer. If you only want to maintain a
-        single state and overwrite it at each call with the most recent 
+        single state and overwrite it at each call with the most recent
         version, leave ``itr=None``. If you want to keep all of the states you
         save, provide unique (increasing) values for 'itr'.
 
@@ -202,7 +202,7 @@ class Logger:
                 graph.
 
             inputs (dict): A dictionary that maps from keys of your choice
-                to the tensorflow placeholders that serve as inputs to the 
+                to the tensorflow placeholders that serve as inputs to the
                 computation graph. Make sure that *all* of the placeholders
                 needed for your outputs are included!
 
@@ -216,7 +216,7 @@ class Logger:
     def _tf_simple_save(self, itr=None):
         """
         Uses simple_save to save a trained model, plus info to make it easy
-        to associated tensors to variables after restore. 
+        to associated tensors to variables after restore.
         """
         if proc_id()==0:
             assert hasattr(self, 'tf_saver_elements'), \
@@ -229,14 +229,14 @@ class Logger:
                 shutil.rmtree(fpath)
             tf.saved_model.simple_save(export_dir=fpath, **self.tf_saver_elements)
             joblib.dump(self.tf_saver_info, osp.join(fpath, 'model_info.pkl'))
-    
+
 
     def setup_pytorch_saver(self, what_to_save):
         """
         Set up easy model saving for a single PyTorch model.
 
         Because PyTorch saving and loading is especially painless, this is
-        very minimal; we just need references to whatever we would like to 
+        very minimal; we just need references to whatever we would like to
         pickle. This is integrated into the logger because the logger
         knows where the user would like to save information about this
         training run.
@@ -265,7 +265,7 @@ class Logger:
                 # by pickling whole objects (which are dependent on the exact
                 # directory structure at the time of saving) as opposed to
                 # just saving network weights. This works sufficiently well
-                # for the purposes of Spinning Up, but you may want to do 
+                # for the purposes of Spinning Up, but you may want to do
                 # something different for your personal PyTorch project.
                 # We use a catch_warnings() context to avoid the warnings about
                 # not being able to save the source code.
@@ -305,18 +305,18 @@ class EpochLogger(Logger):
     A variant of Logger tailored for tracking average values over epochs.
 
     Typical use case: there is some quantity which is calculated many times
-    throughout an epoch, and at the end of the epoch, you would like to 
+    throughout an epoch, and at the end of the epoch, you would like to
     report the average / std / min / max value of that quantity.
 
     With an EpochLogger, each time the quantity is calculated, you would
-    use 
+    use
 
     .. code-block:: python
 
         epoch_logger.store(NameOfQuantity=quantity_value)
 
-    to load it into the EpochLogger's state. Then at the end of the epoch, you 
-    would use 
+    to load it into the EpochLogger's state. Then at the end of the epoch, you
+    would use
 
     .. code-block:: python
 
@@ -333,7 +333,7 @@ class EpochLogger(Logger):
         """
         Save something into the epoch_logger's current state.
 
-        Provide an arbitrary number of keyword arguments with numerical 
+        Provide an arbitrary number of keyword arguments with numerical
         values.
         """
         for k,v in kwargs.items():
@@ -347,14 +347,14 @@ class EpochLogger(Logger):
 
         Args:
             key (string): The name of the diagnostic. If you are logging a
-                diagnostic whose state has previously been saved with 
+                diagnostic whose state has previously been saved with
                 ``store``, the key here has to match the key you used there.
 
             val: A value for the diagnostic. If you have previously saved
                 values for this key via ``store``, do *not* provide a ``val``
                 here.
 
-            with_min_and_max (bool): If true, log min and max values of the 
+            with_min_and_max (bool): If true, log min and max values of the
                 diagnostic over the epoch.
 
             average_only (bool): If true, do not log the standard deviation
@@ -362,17 +362,20 @@ class EpochLogger(Logger):
         """
         if val is not None:
             super().log_tabular(key,val)
+            ret = (key, val)
         else:
             v = self.epoch_dict[key]
             vals = np.concatenate(v) if isinstance(v[0], np.ndarray) and len(v[0].shape)>0 else v
             stats = mpi_statistics_scalar(vals, with_min_and_max=with_min_and_max)
-            super().log_tabular(key if average_only else 'Average' + key, stats[0])
+            super().log_tabular(key if average_only else 'avg_' + key, stats[0])
             if not(average_only):
-                super().log_tabular('Std'+key, stats[1])
+                super().log_tabular('std_'+key, stats[1])
             if with_min_and_max:
-                super().log_tabular('Max'+key, stats[3])
-                super().log_tabular('Min'+key, stats[2])
+                super().log_tabular('max_'+key, stats[3])
+                super().log_tabular('min_'+key, stats[2])
+            ret = (key, stats)
         self.epoch_dict[key] = []
+        return ret
 
     def get_stats(self, key):
         """

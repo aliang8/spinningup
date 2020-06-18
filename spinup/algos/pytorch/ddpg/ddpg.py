@@ -2,6 +2,7 @@ from copy import deepcopy
 import numpy as np
 import torch
 from torch.optim import Adam
+import os
 import gym
 import time
 import spinup.algos.pytorch.ddpg.core as core
@@ -41,7 +42,7 @@ class ReplayBuffer:
 
 
 
-def ddpg(env_fn, actor_critic=None, ac_kwargs=dict(), replay_buffer=None,replay_buffer_kwargs=dict(), seed=0, steps_per_epoch=4000, epochs=100, replay_size=int(1e6), gamma=0.99, polyak=0.995, pi_lr=1e-3, q_lr=1e-3, batch_size=100, start_steps=10000, update_after=1000, update_every=50, act_noise=0.1, num_test_episodes=10, max_ep_len=1000, logger_kwargs=None, save_freq=1):
+def ddpg(env_fn, mode='train', actor_critic=None, ac_kwargs=dict(), replay_buffer=None,replay_buffer_kwargs=dict(), seed=0, steps_per_epoch=4000, epochs=100, replay_size=int(1e6), gamma=0.99, polyak=0.995, pi_lr=1e-3, q_lr=1e-3, batch_size=100, start_steps=10000, update_after=1000, update_every=50, act_noise=0.1, num_test_episodes=10, max_ep_len=1000, logger=None, logger_kwargs=None, save_freq=1, device='cpu'):
     """
     Deep Deterministic Policy Gradient (DDPG)
 
@@ -126,8 +127,10 @@ def ddpg(env_fn, actor_critic=None, ac_kwargs=dict(), replay_buffer=None,replay_
 
     """
 
-    # if not logger: assert RuntimeError('Please set logger...')
-    logger = EpochLogger(**logger_kwargs)
+    if not logger:
+        logger = EpochLogger(**logger_kwargs)
+    else:
+        logger = logger(**logger_kwargs)
 
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -148,6 +151,28 @@ def ddpg(env_fn, actor_critic=None, ac_kwargs=dict(), replay_buffer=None,replay_
         ac = actor_critic(**ac_kwargs)
 
     ac_targ = deepcopy(ac)
+
+    # Put on CUDA
+    ac = ac.to(device)
+    ac_targ = ac_targ.to(device)
+
+    # Set up optimizers for policy and q-function
+    pi_optimizer = Adam(ac.pi.parameters(), lr=pi_lr)
+    q_optimizer = Adam(ac.q.parameters(), lr=q_lr)
+
+    # Set up model saving
+    logger.setup_pytorch_saver(ac)
+
+    # Load from checkpoint if eval
+    if mode == 'eval':
+        chkpt_file = os.path.join(logger_kwargs['output_dir'], 'checkpoints', 'ckpt_1_-183.19.pth')
+        checkpoint = torch.load(chkpt_file)
+        ac.load_state_dict(checkpoint['model_state_dict'])
+        ac_targ.load_state_dict(checkpoint['model_state_dict'])
+        pi_optimizer.load_state_dict(checkpoint['pi_optimizer_state_dict'])
+        q_optimizer.load_state_dict(checkpoint['q_optimizer_state_dict'])
+        ac.eval()
+        ac_targ.eval()
 
     # Freeze target networks with respect to optimizers (only update via polyak averaging)
     for p in ac_targ.parameters():
@@ -178,7 +203,7 @@ def ddpg(env_fn, actor_critic=None, ac_kwargs=dict(), replay_buffer=None,replay_
         loss_q = ((q - backup)**2).mean()
 
         # Useful info for logging
-        loss_info = dict(QVals=q.detach().numpy())
+        loss_info = dict(q_vals=q.detach().cpu().numpy())
 
         return loss_q, loss_info
 
@@ -187,13 +212,6 @@ def ddpg(env_fn, actor_critic=None, ac_kwargs=dict(), replay_buffer=None,replay_
         o = data['obs']
         q_pi = ac.q(o, ac.pi(o))
         return -q_pi.mean()
-
-    # Set up optimizers for policy and q-function
-    pi_optimizer = Adam(ac.pi.parameters(), lr=pi_lr)
-    q_optimizer = Adam(ac.q.parameters(), lr=q_lr)
-
-    # Set up model saving
-    logger.setup_pytorch_saver(ac)
 
     def update(data):
         # First run one gradient descent step for Q.
@@ -218,7 +236,7 @@ def ddpg(env_fn, actor_critic=None, ac_kwargs=dict(), replay_buffer=None,replay_
             p.requires_grad = True
 
         # Record things
-        logger.store(LossQ=loss_q.item(), LossPi=loss_pi.item(), **loss_info)
+        logger.store(loss_critic=loss_q.item(), loss_policy=loss_pi.item(), **loss_info)
 
         # Finally, update target networks by polyak averaging.
         with torch.no_grad():
@@ -241,76 +259,99 @@ def ddpg(env_fn, actor_critic=None, ac_kwargs=dict(), replay_buffer=None,replay_
                 o, r, d, _ = test_env.step(get_action(o, 0))
                 ep_ret += r
                 ep_len += 1
-            logger.store(TestEpRet=ep_ret, TestEpLen=ep_len)
+            logger.store(eval_episode_return=ep_ret, eval_episode_length=ep_len)
 
-    # Prepare for interaction with environment
-    total_steps = steps_per_epoch * epochs
-    start_time = time.time()
-    o, ep_ret, ep_len = env.reset(), 0, 0
+    def save_model(epoch, key):
+        savepath = os.path.join(logger_kwargs['output_dir'], 'checkpoints', f'ckpt_{epoch}_{key:.2f}.pth')
 
-    # Main loop: collect experience in env and update/log each epoch
-    for t in range(total_steps):
+        print(f'Saving model to {savepath}')
 
-        # Until start_steps have elapsed, randomly sample actions
-        # from a uniform distribution for better exploration. Afterwards,
-        # use the learned policy (with some noise, via act_noise).
-        if t > start_steps:
-            a = get_action(o, act_noise)
-        else:
-            a = env.action_space['action'].sample()
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': ac.state_dict(),
+            'pi_optimizer_state_dict': pi_optimizer.state_dict(),
+            'q_optimizer_state_dict': q_optimizer.state_dict()
+        }, savepath)
 
-        # Step the env
-        o2, r, d, _ = env.step(a)
+    if mode == 'train':
+        # Prepare for interaction with environment
+        total_steps = steps_per_epoch * epochs
+        start_time = time.time()
+        o, ep_ret, ep_len = env.reset(), 0, 0
 
-        ep_ret += r
-        ep_len += 1
+        prev_best = float('-inf')
 
-        # Ignore the "done" signal if it comes from hitting the time
-        # horizon (that is, when it's an artificial terminal signal
-        # that isn't based on the agent's state)
-        d = False if ep_len==max_ep_len else d
+        # Main loop: collect experience in env and update/log each epoch
+        for t in range(total_steps):
 
-        # Store experience to replay buffer
-        replay_buffer.store(o, a, r, o2, d)
+            # Until start_steps have elapsed, randomly sample actions
+            # from a uniform distribution for better exploration. Afterwards,
+            # use the learned policy (with some noise, via act_noise).
+            if t > start_steps:
+                a = get_action(o, act_noise)
+            else:
+                a = env.action_space['action'].sample()
 
-        # Super critical, easy to overlook step: make sure to update
-        # most recent observation!
-        o = o2
+            # Step the env
+            o2, r, d, _ = env.step(a)
 
-        # End of trajectory handling
-        if d or (ep_len == max_ep_len):
-            logger.store(EpRet=ep_ret, EpLen=ep_len)
-            o, ep_ret, ep_len = env.reset(), 0, 0
+            ep_ret += r
+            ep_len += 1
 
-        # Update handling
-        if t >= update_after and t % update_every == 0:
-            for _ in range(update_every):
-                batch = replay_buffer.sample_batch(batch_size)
-                update(data=batch)
+            # Ignore the "done" signal if it comes from hitting the time
+            # horizon (that is, when it's an artificial terminal signal
+            # that isn't based on the agent's state)
+            d = False if ep_len==max_ep_len else d
 
-        # End of epoch handling
-        if (t+1) % steps_per_epoch == 0:
-            epoch = (t+1) // steps_per_epoch
+            # Store experience to replay buffer
+            replay_buffer.store(o, a, r, o2, d)
 
-            # Save model
-            if (epoch % save_freq == 0) or (epoch == epochs):
-                logger.save_state({'env': env}, None)
+            # Super critical, easy to overlook step: make sure to update
+            # most recent observation!
+            o = o2
 
-            # Test the performance of the deterministic version of the agent.
-            test_agent()
+            # End of trajectory handling
+            if d or (ep_len == max_ep_len):
+                logger.store(episode_return=ep_ret, episode_length=ep_len)
+                o, ep_ret, ep_len = env.reset(), 0, 0
 
-            # Log info about epoch
-            logger.log_tabular('Epoch', epoch)
-            logger.log_tabular('EpRet', with_min_and_max=True)
-            logger.log_tabular('TestEpRet', with_min_and_max=True)
-            logger.log_tabular('EpLen', average_only=True)
-            logger.log_tabular('TestEpLen', average_only=True)
-            logger.log_tabular('TotalEnvInteracts', t)
-            logger.log_tabular('QVals', with_min_and_max=True)
-            logger.log_tabular('LossPi', average_only=True)
-            logger.log_tabular('LossQ', average_only=True)
-            logger.log_tabular('Time', time.time()-start_time)
-            logger.dump_tabular()
+            # Update handling
+            if t >= update_after and t % update_every == 0:
+                for _ in range(update_every):
+                    batch = replay_buffer.sample_batch(batch_size)
+                    update(data=batch)
+
+            # End of epoch handling
+            if (t+1) % steps_per_epoch == 0:
+                epoch = (t+1) // steps_per_epoch
+
+                # Save model
+                if (epoch % save_freq == 0) or (epoch == epochs):
+                    logger.save_state({'env': env}, None)
+
+                # Test the performance of the deterministic version of the agent.
+                test_agent()
+
+                avg_episode_ret = np.mean(logger.epoch_dict['episode_return'])
+
+                # Log info about epoch
+                logger.log_epoch_stats(epoch, 'train', 'episode_return', with_min_and_max=True)
+                logger.log_epoch_stats(epoch, 'eval', 'eval_episode_return', with_min_and_max=True)
+                logger.log_epoch_stats(epoch, 'train', 'episode_length', average_only=True)
+                logger.log_epoch_stats(epoch, 'eval', 'eval_episode_length', average_only=True)
+                logger.log_epoch_stats(epoch, 'train', 'total_interactions', t)
+                logger.log_epoch_stats(epoch, 'rl', 'q_vals', with_min_and_max=True)
+                logger.log_epoch_stats(epoch, 'rl', 'loss_policy', average_only=True)
+                logger.log_epoch_stats(epoch, 'rl', 'loss_critic', average_only=True)
+                logger.log_tabular('Time', time.time()-start_time)
+                logger.dump_tabular()
+
+                if avg_episode_ret > prev_best:
+                    print(f'Prev best {prev_best}, new best {avg_episode_ret}')
+                    save_model(epoch=epoch, key=avg_episode_ret)
+                prev_best = max(prev_best, avg_episode_ret)
+    elif mode == 'eval':
+        test_agent()
 
 if __name__ == '__main__':
     import argparse
