@@ -335,6 +335,7 @@ def ddpg(env_fn, mode='train', actor_critic=None, ac_kwargs=dict(), replay_buffe
                 avg_episode_ret = np.mean(logger.epoch_dict['episode_return'])
 
                 # Log info about epoch
+                logger.log_tabular('epoch', epoch)
                 logger.log_epoch_stats(epoch, 'train', 'episode_return', with_min_and_max=True)
                 logger.log_epoch_stats(epoch, 'eval', 'eval_episode_return', with_min_and_max=True)
                 logger.log_epoch_stats(epoch, 'train', 'episode_length', average_only=True)
@@ -343,7 +344,7 @@ def ddpg(env_fn, mode='train', actor_critic=None, ac_kwargs=dict(), replay_buffe
                 logger.log_epoch_stats(epoch, 'rl', 'q_vals', with_min_and_max=True)
                 logger.log_epoch_stats(epoch, 'rl', 'loss_policy', average_only=True)
                 logger.log_epoch_stats(epoch, 'rl', 'loss_critic', average_only=True)
-                logger.log_tabular('Time', time.time()-start_time)
+                logger.log_tabular('time_elapsed', time.time()-start_time)
                 logger.dump_tabular()
 
                 if avg_episode_ret > prev_best:
