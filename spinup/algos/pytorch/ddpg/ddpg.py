@@ -7,6 +7,7 @@ import gym
 import time
 import spinup.algos.pytorch.ddpg.core as core
 from spinup.utils.logx import EpochLogger
+from src.utils import *
 
 
 class ReplayBuffer:
@@ -127,15 +128,43 @@ def ddpg(env_fn, mode='train', actor_critic=None, ac_kwargs=dict(), replay_buffe
 
     """
 
-    if not logger:
-        logger = EpochLogger(**logger_kwargs)
-    else:
-        logger = logger(**logger_kwargs)
-
     torch.manual_seed(seed)
     np.random.seed(seed)
 
     env, test_env = env_fn('train'), env_fn('test')
+
+    # ==================================
+    # Creating logging folders
+    # ==================================
+    output_dir = logger_kwargs['output_dir']
+    exp_name = output_dir.split('/')[1]
+
+    try:
+        chkpt_dir = os.path.join(output_dir, 'checkpoints')
+        os.makedirs(chkpt_dir)
+        log(f'Created {chkpt_dir}', 'green')
+    except:
+        pass
+
+    try:
+        tb_dir = os.path.join(output_dir, 'tensorboard')
+        os.makedirs(tb_dir)
+        log(f'Created {tb_dir}', 'green')
+    except:
+        pass
+
+    try:
+        vid_dir = os.path.join(output_dir, 'videos')
+        os.makedirs(vid_dir)
+        log(f'Created {vid_dir}', 'green')
+        test_env.set_save_dir(vid_dir)
+    except:
+        pass
+
+    if not logger:
+        logger = EpochLogger(**logger_kwargs)
+    else:
+        logger = logger(**logger_kwargs)
 
     # ********************* CUSTOM ********************* #
     obs_dim = sum([env.observation_space.spaces[k].shape[0] for k in env.observation_space.spaces.keys()])
@@ -249,7 +278,8 @@ def ddpg(env_fn, mode='train', actor_critic=None, ac_kwargs=dict(), replay_buffe
     def get_action(o, noise_scale):
         a = ac.act(o)
         a += noise_scale * np.random.randn(act_dim)
-        return np.clip(a, -act_limit, act_limit)
+        # this used to be -act_limit
+        return np.clip(a, 0, act_limit)
 
     def test_agent():
         for j in range(num_test_episodes):
@@ -294,6 +324,10 @@ def ddpg(env_fn, mode='train', actor_critic=None, ac_kwargs=dict(), replay_buffe
 
             # Step the env
             o2, r, d, _ = env.step(a)
+
+            # if t > start_steps:
+            #     print('='*40)
+            #     print(o2, r, a)
 
             ep_ret += r
             ep_len += 1

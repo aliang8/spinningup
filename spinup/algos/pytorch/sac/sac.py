@@ -3,6 +3,7 @@ import itertools
 import numpy as np
 import torch
 from torch.optim import Adam
+import os
 import gym
 import time
 import spinup.algos.pytorch.sac.core as core
@@ -42,11 +43,7 @@ class ReplayBuffer:
 
 
 
-def sac(env_fn, actor_critic=core.MLPActorCritic, replay_buffer=None, ac_kwargs=dict(), seed=0,
-        steps_per_epoch=4000, epochs=100, replay_size=int(1e6), gamma=0.99,
-        polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=10000,
-        update_after=1000, update_every=50, num_test_episodes=10, max_ep_len=1000,
-        logger_kwargs=dict(), save_freq=1):
+def sac(env_fn, mode='train', actor_critic=None, ac_kwargs=dict(), replay_buffer=None,replay_buffer_kwargs=dict(), seed=0, steps_per_epoch=4000, epochs=100, replay_size=int(1e6), gamma=0.99, polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=10000, update_after=1000, update_every=50, num_test_episodes=10, max_ep_len=1000, logger=None, logger_kwargs=dict(), save_freq=1, device='cpu'):
     """
     Soft Actor-Critic (SAC)
 
@@ -144,13 +141,42 @@ def sac(env_fn, actor_critic=core.MLPActorCritic, replay_buffer=None, ac_kwargs=
 
     """
 
-    logger = EpochLogger(**logger_kwargs)
-    logger.save_config(locals())
-
     torch.manual_seed(seed)
     np.random.seed(seed)
 
-    env, test_env = env_fn(), env_fn()
+    env, test_env = env_fn('train'), env_fn('test')
+    # ==================================
+    # Creating logging folders
+    # ==================================
+    output_dir = logger_kwargs['output_dir']
+    exp_name = output_dir.split('/')[1]
+
+    try:
+        chkpt_dir = os.path.join(output_dir, 'checkpoints')
+        os.makedirs(chkpt_dir)
+        log(f'Created {chkpt_dir}', 'green')
+    except:
+        pass
+
+    try:
+        tb_dir = os.path.join(output_dir, 'tensorboard')
+        os.makedirs(tb_dir)
+        log(f'Created {tb_dir}', 'green')
+    except:
+        pass
+
+    try:
+        vid_dir = os.path.join(output_dir, 'videos')
+        os.makedirs(vid_dir)
+        log(f'Created {vid_dir}', 'green')
+        test_env.set_save_dir(vid_dir)
+    except:
+        pass
+
+    if not logger:
+        logger = EpochLogger(**logger_kwargs)
+    else:
+        logger = logger(**logger_kwargs)
 
     # ********************* CUSTOM ********************* #
     obs_dim = sum([env.observation_space.spaces[k].shape[0] for k in env.observation_space.spaces.keys()])
@@ -160,8 +186,16 @@ def sac(env_fn, actor_critic=core.MLPActorCritic, replay_buffer=None, ac_kwargs=
     act_limit = env.action_space['action'].high[0]
 
     # Create actor-critic module and target networks
-    ac = actor_critic(env.observation_space, env.action_space['action'], **ac_kwargs)
+    if actor_critic is None:
+        ac = core.MLPActorCritic(env.observation_space, env.action_space['action'], **ac_kwargs)
+    else:
+        ac = actor_critic(**ac_kwargs)
+
     ac_targ = deepcopy(ac)
+
+    # Put on CUDA
+    ac = ac.to(device)
+    ac_targ = ac_targ.to(device)
 
     # Freeze target networks with respect to optimizers (only update via polyak averaging)
     for p in ac_targ.parameters():
@@ -172,7 +206,9 @@ def sac(env_fn, actor_critic=core.MLPActorCritic, replay_buffer=None, ac_kwargs=
 
     # Experience buffer
     if not replay_buffer:
-        relay_buffer = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=replay_size)
+        replay_buffer = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=replay_size)
+    else:
+        replay_buffer = replay_buffer(**replay_buffer_kwargs)
 
     # Count variables (protip: try to get a feel for how different size networks behave!)
     var_counts = tuple(core.count_vars(module) for module in [ac.pi, ac.q1, ac.q2])
@@ -202,8 +238,8 @@ def sac(env_fn, actor_critic=core.MLPActorCritic, replay_buffer=None, ac_kwargs=
         loss_q = loss_q1 + loss_q2
 
         # Useful info for logging
-        q_info = dict(Q1Vals=q1.detach().numpy(),
-                      Q2Vals=q2.detach().numpy())
+        q_info = dict(q1_vals=q1.cpu().detach().numpy(),
+                      q2_vals=q2.cpu().detach().numpy())
 
         return loss_q, q_info
 
@@ -219,7 +255,7 @@ def sac(env_fn, actor_critic=core.MLPActorCritic, replay_buffer=None, ac_kwargs=
         loss_pi = (alpha * logp_pi - q_pi).mean()
 
         # Useful info for logging
-        pi_info = dict(LogPi=logp_pi.detach().numpy())
+        pi_info = dict(log_policy=logp_pi.cpu().detach().numpy())
 
         return loss_pi, pi_info
 
@@ -238,7 +274,7 @@ def sac(env_fn, actor_critic=core.MLPActorCritic, replay_buffer=None, ac_kwargs=
         q_optimizer.step()
 
         # Record things
-        logger.store(LossQ=loss_q.item(), **q_info)
+        logger.store(loss_critic=loss_q.item(), **q_info)
 
         # Freeze Q-networks so you don't waste computational effort
         # computing gradients for them during the policy learning step.
@@ -256,7 +292,7 @@ def sac(env_fn, actor_critic=core.MLPActorCritic, replay_buffer=None, ac_kwargs=
             p.requires_grad = True
 
         # Record things
-        logger.store(LossPi=loss_pi.item(), **pi_info)
+        logger.store(loss_policy=loss_pi.item(), **pi_info)
 
         # Finally, update target networks by polyak averaging.
         with torch.no_grad():
@@ -277,12 +313,25 @@ def sac(env_fn, actor_critic=core.MLPActorCritic, replay_buffer=None, ac_kwargs=
                 o, r, d, _ = test_env.step(get_action(o, True))
                 ep_ret += r
                 ep_len += 1
-            logger.store(TestEpRet=ep_ret, TestEpLen=ep_len)
+            logger.store(eval_episode_return=ep_ret, eval_episode_length=ep_len)
+
+    def save_model(epoch, key):
+        savepath = os.path.join(logger_kwargs['output_dir'], 'checkpoints', f'ckpt_{epoch}_{key:.2f}.pth')
+
+        print(f'Saving model to {savepath}')
+
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': ac.state_dict(),
+            'pi_optimizer_state_dict': pi_optimizer.state_dict(),
+            'q_optimizer_state_dict': q_optimizer.state_dict()
+        }, savepath)
 
     # Prepare for interaction with environment
     total_steps = steps_per_epoch * epochs
     start_time = time.time()
     o, ep_ret, ep_len = env.reset(), 0, 0
+    prev_best = float('-inf')
 
     # Main loop: collect experience in env and update/log each epoch
     for t in range(total_steps):
@@ -314,7 +363,7 @@ def sac(env_fn, actor_critic=core.MLPActorCritic, replay_buffer=None, ac_kwargs=
 
         # End of trajectory handling
         if d or (ep_len == max_ep_len):
-            logger.store(EpRet=ep_ret, EpLen=ep_len)
+            logger.store(episode_return=ep_ret, episode_length=ep_len)
             o, ep_ret, ep_len = env.reset(), 0, 0
 
         # Update handling
@@ -334,20 +383,27 @@ def sac(env_fn, actor_critic=core.MLPActorCritic, replay_buffer=None, ac_kwargs=
             # Test the performance of the deterministic version of the agent.
             test_agent()
 
+            avg_episode_ret = np.mean(logger.epoch_dict['episode_return'])
+
             # Log info about epoch
-            logger.log_tabular('Epoch', epoch)
-            logger.log_tabular('EpRet', with_min_and_max=True)
-            logger.log_tabular('TestEpRet', with_min_and_max=True)
-            logger.log_tabular('EpLen', average_only=True)
-            logger.log_tabular('TestEpLen', average_only=True)
-            logger.log_tabular('TotalEnvInteracts', t)
-            logger.log_tabular('Q1Vals', with_min_and_max=True)
-            logger.log_tabular('Q2Vals', with_min_and_max=True)
-            logger.log_tabular('LogPi', with_min_and_max=True)
-            logger.log_tabular('LossPi', average_only=True)
-            logger.log_tabular('LossQ', average_only=True)
-            logger.log_tabular('Time', time.time()-start_time)
+            logger.log_tabular('epoch', epoch)
+            logger.log_epoch_stats(epoch, 'train', 'episode_return', with_min_and_max=True)
+            logger.log_epoch_stats(epoch, 'eval', 'eval_episode_return', with_min_and_max=True)
+            logger.log_epoch_stats(epoch, 'train', 'episode_length', average_only=True)
+            logger.log_epoch_stats(epoch, 'eval', 'eval_episode_length', average_only=True)
+            logger.log_epoch_stats(epoch, 'train', 'total_interactions', t)
+            logger.log_epoch_stats(epoch, 'rl', 'q1_vals', with_min_and_max=True)
+            logger.log_epoch_stats(epoch, 'rl', 'q2_vals', with_min_and_max=True)
+            logger.log_epoch_stats(epoch, 'rl', 'log_policy', with_min_and_max=True)
+            logger.log_epoch_stats(epoch, 'rl', 'loss_policy', average_only=True)
+            logger.log_epoch_stats(epoch, 'rl', 'loss_critic', average_only=True)
+            logger.log_tabular('time_elapsed', time.time()-start_time)
             logger.dump_tabular()
+
+            if avg_episode_ret > prev_best:
+                print(f'Prev best {prev_best}, new best {avg_episode_ret}')
+                save_model(epoch=epoch, key=avg_episode_ret)
+            prev_best = max(prev_best, avg_episode_ret)
 
 if __name__ == '__main__':
     import argparse
