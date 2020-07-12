@@ -8,6 +8,7 @@ import gym
 import time
 import spinup.algos.pytorch.sac.core as core
 from spinup.utils.logx import EpochLogger
+from src.utils import *
 
 
 class ReplayBuffer:
@@ -41,6 +42,55 @@ class ReplayBuffer:
                      done=self.done_buf[idxs])
         return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in batch.items()}
 
+def sac_test(env_fn, checkpoint_file='', actor_critic=None, ac_kwargs=dict(), num_test_episodes=10, max_ep_len=5000, logger_kwargs=dict(), device='cpu', **kwargs):
+
+    if not checkpoint_file:
+        checkpoint_file = os.path.join(logger_kwargs['output_dir'], 'checkpoints', 'best_ckpt.pth')
+
+    if not os.path.exists(checkpoint_file):
+        raise RuntimeError(f'Checkpoint file does not exist: {checkpoint_file}')
+
+    env = env_fn('train')
+    obs_dim = sum([env.observation_space.spaces[k].shape[0] for k in env.observation_space.spaces.keys()])
+    act_dim = env.action_space['action'].shape[0]
+
+    # Action limit for clamping: critically, assumes all dimensions share the same bound!
+    act_limit = env.action_space['action'].high[0]
+
+    # Create actor-critic module and target networks
+    if actor_critic is None:
+        ac = core.MLPActorCritic(env.observation_space, env.action_space['action'], **ac_kwargs)
+    else:
+        ac = actor_critic(**ac_kwargs)
+
+    ac = ac.to(device)
+
+    # Set up optimizers for policy and q-function
+    pi_optimizer = Adam(ac.pi.parameters())
+    q_params = itertools.chain(ac.q1.parameters(), ac.q2.parameters())
+    q_optimizer = Adam(q_params)
+
+    log(f'Loading checkpoint from: {checkpoint_file}', 'green')
+    chkpt = torch.load(checkpoint_file, map_location=torch.device(device))
+    last_epoch = chkpt['epoch']
+
+    ac.load_state_dict(chkpt['model_state_dict'])
+    pi_optimizer.load_state_dict(chkpt['pi_optimizer_state_dict'])
+    q_optimizer.load_state_dict(chkpt['q_optimizer_state_dict'])
+
+    def get_action(o, deterministic=False):
+        return ac.act(o, deterministic)
+
+    for j in range(num_test_episodes):
+        o, d, ep_ret, ep_len = env.reset(), False, 0, 0
+        while not(d or (ep_len == max_ep_len)):
+            # Take deterministic actions at test time
+            o, r, d, _ = env.step(get_action(o, True), 'data_collection')
+            env.render()
+            ep_ret += r
+            ep_len += 1
+
+        log(f'Episode: {j}. Episode return: {ep_ret}, episode length: {ep_len}')
 
 
 def sac(env_fn, mode='train', actor_critic=None, ac_kwargs=dict(), replay_buffer=None,replay_buffer_kwargs=dict(), seed=0, steps_per_epoch=4000, epochs=100, replay_size=int(1e6), gamma=0.99, polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=10000, update_after=1000, update_every=50, num_test_episodes=10, max_ep_len=1000, logger=None, logger_kwargs=dict(), save_freq=1, device='cpu'):
@@ -317,15 +367,18 @@ def sac(env_fn, mode='train', actor_critic=None, ac_kwargs=dict(), replay_buffer
 
     def save_model(epoch, key):
         savepath = os.path.join(logger_kwargs['output_dir'], 'checkpoints', f'ckpt_{epoch}_{key:.2f}.pth')
+        bestckpt_path = os.path.join(logger_kwargs['output_dir'], 'checkpoints', 'best_ckpt.pth')
 
-        print(f'Saving model to {savepath}')
+        print(f'Saving model to {savepath}.')
 
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': ac.state_dict(),
-            'pi_optimizer_state_dict': pi_optimizer.state_dict(),
-            'q_optimizer_state_dict': q_optimizer.state_dict()
-        }, savepath)
+        # Save twice
+        for path in [savepath, bestckpt_path]:
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': ac.state_dict(),
+                'pi_optimizer_state_dict': pi_optimizer.state_dict(),
+                'q_optimizer_state_dict': q_optimizer.state_dict()
+            }, path)
 
     # Prepare for interaction with environment
     total_steps = steps_per_epoch * epochs
@@ -404,6 +457,7 @@ def sac(env_fn, mode='train', actor_critic=None, ac_kwargs=dict(), replay_buffer
                 print(f'Prev best {prev_best}, new best {avg_episode_ret}')
                 save_model(epoch=epoch, key=avg_episode_ret)
             prev_best = max(prev_best, avg_episode_ret)
+
 
 if __name__ == '__main__':
     import argparse
