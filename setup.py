@@ -19,7 +19,7 @@ setup(
         'ipython',
         'joblib',
         'matplotlib==3.1.1',
-        'mpi4py',
+        # 'mpi4py',
         'numpy',
         'pandas',
         'pytest',
