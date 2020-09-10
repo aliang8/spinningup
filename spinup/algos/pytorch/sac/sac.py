@@ -95,7 +95,33 @@ def sac_test(env_fn, checkpoint_file='', actor_critic=None, ac_kwargs=dict(), nu
 def sac_wrapper(config):
     sac(**config)
 
-def sac(env_fn, checkpoint_file='', mode='train', actor_critic=None, ac_kwargs=dict(), replay_buffer=None,replay_buffer_kwargs=dict(), seed=0, steps_per_epoch=4000, epochs=100, replay_size=int(1e6), gamma=0.99, polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=10000, update_after=1000, update_every=50, num_test_episodes=10, max_ep_len=1000, logger=None, logger_kwargs=dict(), save_freq=1, device='cpu'):
+def sac(
+    env_fn,
+    checkpoint_file='',
+    mode='train',
+    actor_critic=None,
+    ac_kwargs=dict(),
+    replay_buffer=None,
+    replay_buffer_kwargs=dict(),
+    seed=0,
+    steps_per_epoch=4000,
+    epochs=100,
+    replay_size=int(1e6),
+    gamma=0.99,
+    polyak=0.995,
+    lr=1e-3,
+    alpha=0.2,
+    batch_size=100,
+    start_steps=10000,
+    update_after=1000,
+    update_every=50,
+    num_test_episodes=10,
+    max_ep_len=1000,
+    logger=None,
+    logger_kwargs=dict(),
+    save_freq=1,
+    device='cpu'
+):
     """
     Soft Actor-Critic (SAC)
 
